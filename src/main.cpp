@@ -4,23 +4,31 @@
  * with push-button.
  */
 
+#define USE_SSD1306      // Select display driver (SSD1306 ONLY SO FAR)
 #define USE_I2C_ENCODER  // Comment this out to switch to pin-based encoder
 
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
 #include "RotaryEncoder.h"   // Handle encoder input
 #include "Counter.h"         // Class for tracking counters
 
-#define BAUDRATE 115200
-
-#define SSD1306_I2C_ADDRESS 0x3C
+// TODO: Handle this in platformio.ini
+// Display settings
+#define OLED_I2C_ADDRESS 0x3C
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 #define OLED_RESET    -1
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
+#ifdef USE_SSD1306
+#include <Adafruit_SSD1306.h>
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+#else
+#include <Adafruit_SH110X.h>
+Adafruit_SH1106G display = Adafruit_SH1106G(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+#endif
+
+// Input Settings
 #ifdef USE_I2C_ENCODER
 I2CRotaryEncoder rotaryEncoder;  // I2C implementation
 #else
@@ -31,6 +39,7 @@ PinRotaryEncoder rotaryEncoder(ROTARY_PIN_A, ROTARY_PIN_B, BUTTON_PIN);  // Pin-
 #endif
 
 #define MAX_OPPONENTS 5
+#define BAUDRATE 115200
 
 Counter lifeTotal("Life Total", 40, 0, 100, 0, true);
 Counter poisonCounters("Poison Counters", 0, 0, 10, 10);
@@ -59,13 +68,13 @@ void setup() {
     Serial.begin(BAUDRATE);
 
     // Initialize SSD1306 display
-    if(!display.begin(SSD1306_I2C_ADDRESS, OLED_RESET)) {
-        Serial.println(F("SSD1306 allocation failed"));
+    if(!display.begin(OLED_I2C_ADDRESS, OLED_RESET)) {
+        Serial.println(F("OLED allocation failed"));
         for(;;); // Don't proceed, loop forever because we're dead in the water without the display
     }
     display.clearDisplay();
     display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
+    display.setTextColor(1); // These are monochrome screens
 
     // Select number of opponents
     selectNumOpponents();

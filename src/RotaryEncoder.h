@@ -7,7 +7,10 @@
 #ifndef ROTARY_ENCODER_H
 #define ROTARY_ENCODER_H
 
-#include "EncoderInterface.h"
+class EncoderInterface {
+public:
+    virtual long read() = 0;  // Pure virtual function for reading the encoder value
+};
 
 #ifdef USE_I2C_ENCODER
 
