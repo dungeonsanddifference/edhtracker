@@ -7,9 +7,11 @@
 #ifndef ROTARY_ENCODER_H
 #define ROTARY_ENCODER_H
 
+// Interface for handling directly-wired EC11 rotary encoders or Adafruit Seesaw encoders
 class EncoderInterface {
 public:
-    virtual long read() = 0;  // Pure virtual function for reading the encoder value
+    virtual long read() = 0;  // Pure virtual method for reading encoder events
+    virtual bool isButtonPressed() = 0;
 };
 
 #ifdef USE_I2C_ENCODER
@@ -48,43 +50,65 @@ public:
 
 #else
 
-#define ENCODER_DO_NOT_USE_INTERRUPTS
-#include <Encoder.h>
-
-// Pin-based Rotary Encoder Implementation
+// Pin-based Rotary Encoder Implementation for RP2040
 class PinRotaryEncoder : public EncoderInterface {
 private:
-    Encoder encoder;
-    uint8_t buttonPin;
-    bool lastButtonState;
-    bool debouncedButtonState;
+    uint8_t pinA, pinB, buttonPin;
+    int16_t encoderPosition;
+    bool lastA, lastB;
+    bool lastButtonState, debouncedButtonState;
     unsigned long lastDebounceTime;
-    const unsigned long debounceDelay = 200;  // Debounce delay in milliseconds
+    const unsigned long debounceDelay = 50;  // Debounce delay in milliseconds
 
 public:
     PinRotaryEncoder(uint8_t pinA, uint8_t pinB, uint8_t btnPin)
-        : encoder(pinA, pinB), buttonPin(btnPin), lastButtonState(false), debouncedButtonState(false), lastDebounceTime(0) {
+        : pinA(pinA), pinB(pinB), buttonPin(btnPin), encoderPosition(0), 
+          lastA(LOW), lastB(LOW), lastButtonState(HIGH), debouncedButtonState(HIGH), 
+          lastDebounceTime(0) {
+
+        pinMode(pinA, INPUT);
+        pinMode(pinB, INPUT);
         pinMode(buttonPin, INPUT_PULLUP);  // Initialize the button pin with internal pull-up
     }
 
     long read() override {
-        return encoder.read();
+        // Non-blocking encoder read
+        bool currentA = digitalRead(pinA);
+        bool currentB = digitalRead(pinB);
+
+        // Check for encoder rotation
+        if (currentA != lastA || currentB != lastB) {
+            if (currentA == currentB) {
+                encoderPosition++;
+            } else {
+                encoderPosition--;
+            }
+        }
+
+        // Save the current state for the next read
+        lastA = currentA;
+        lastB = currentB;
+
+        return encoderPosition;
     }
 
     bool isButtonPressed() override {
-        bool currentButtonState = digitalRead(buttonPin) == LOW;  // Active low
-
+        // Non-blocking button state read with debounce
+        bool currentButtonState = digitalRead(buttonPin);
         if (currentButtonState != lastButtonState) {
-            lastDebounceTime = millis();  // Reset debounce timer
+            lastDebounceTime = millis();
         }
 
         if ((millis() - lastDebounceTime) > debounceDelay) {
-            if (currentButtonState != debouncedButtonState) {
-                debouncedButtonState = currentButtonState;
+            if (currentButtonState == LOW && !debouncedButtonState) {
+                debouncedButtonState = true;
+            } else if (currentButtonState == HIGH) {
+                debouncedButtonState = false;
             }
         }
 
         lastButtonState = currentButtonState;
+
         return debouncedButtonState;
     }
 };

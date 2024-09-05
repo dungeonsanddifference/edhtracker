@@ -1,45 +1,39 @@
 /*
  * Code for tracking Life Total, Poison Counters, and Commander Damage
- * in EDH/Commander. Uses a SSD1306 OLED Display and a rotary encoder
+ * in EDH/Commander. Uses a SH1106 OLED Display and a rotary encoder
  * with push-button.
  */
-
-#define USE_SSD1306      // Select display driver (SSD1306 ONLY SO FAR)
-#define USE_I2C_ENCODER  // Comment this out to switch to pin-based encoder
 
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
-#include "RotaryEncoder.h"   // Handle encoder input
 #include "Counter.h"         // Class for tracking counters
+#include <Adafruit_SH110X.h> // 2.1.10
+#include <RotaryEncoder.h>
 
-// TODO: Handle this in platformio.ini
+#define BAUDRATE 115200
+
+// HW pins
+#define PIN_ROTA 6  // rotary encoder A
+#define PIN_ROTB 7  // rotary encoder B
+#define PIN_BTN  8  // pushbutton
+#define PIN_LED  13  // status LED
+
 // Display settings
 #define OLED_I2C_ADDRESS 0x3C
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 #define OLED_RESET    -1
 
-#ifdef USE_SSD1306
-#include <Adafruit_SSD1306.h>
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-#else
-#include <Adafruit_SH110X.h>
+// Create the rotary encoder
+RotaryEncoder encoder(PIN_ROTA, PIN_ROTB, RotaryEncoder::LatchMode::FOUR3);
+void checkPosition() {  encoder.tick(); } // just call tick() to check the state.
+
+// Initialize display
 Adafruit_SH1106G display = Adafruit_SH1106G(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-#endif
 
-// Input Settings
-#ifdef USE_I2C_ENCODER
-I2CRotaryEncoder rotaryEncoder;  // I2C implementation
-#else
-#define ROTARY_PIN_A 14
-#define ROTARY_PIN_B 15
-#define BUTTON_PIN 16
-PinRotaryEncoder rotaryEncoder(ROTARY_PIN_A, ROTARY_PIN_B, BUTTON_PIN);  // Pin-based implementation
-#endif
-
+// Game Rule Settings
 #define MAX_OPPONENTS 5
-#define BAUDRATE 115200
 
 Counter lifeTotal("Life Total", 40, 0, 100, 0, true);
 Counter poisonCounters("Poison Counters", 0, 0, 10, 10);
@@ -50,22 +44,28 @@ uint8_t numCounters = 2;  // Initially, we have lifeTotal and poisonCounters
 uint8_t currentCounterIndex = 0;
 uint8_t numOpponents = 0;
 
-int16_t oldPosition  = 0;  // To track rotary encoder changes
-
 // For non-blocking button handling
 bool isButtonPressed = false;
 unsigned long lastDebounceTime = 0;
 const unsigned long debounceDelay = 200;  // Debounce delay in milliseconds
 
 // Function prototypes
-void handleRotation();
+int8_t handleRotation(); // Updated to return +1, 0, or -1
 void selectNumOpponents();
 void setupCommanderDamageCounters();
+bool checkIfAnyCounterIsDead();
 void displayCounter();
 
 // Setup
 void setup() {
+    delay(250);
     Serial.begin(BAUDRATE);
+    delay(100);
+
+    // Initialize pins
+    pinMode(PIN_BTN, INPUT_PULLUP);
+    pinMode(PIN_LED, OUTPUT);
+    digitalWrite(PIN_LED, LOW);
 
     // Initialize SSD1306 display
     if(!display.begin(OLED_I2C_ADDRESS, OLED_RESET)) {
@@ -73,8 +73,14 @@ void setup() {
         for(;;); // Don't proceed, loop forever because we're dead in the water without the display
     }
     display.clearDisplay();
+    display.setCursor(0, 0);
     display.setTextSize(1);
     display.setTextColor(1); // These are monochrome screens
+    display.print("Select Opponents");
+    display.setCursor(0, 20);
+    display.setTextSize(2);
+    display.print(numOpponents);
+    display.display();
 
     // Select number of opponents
     selectNumOpponents();
@@ -86,27 +92,38 @@ void setup() {
 // Main loop
 void loop() {
     // Check for rotation
-    handleRotation();
-    // Presing the button will cycle between counters
-    if (rotaryEncoder.isButtonPressed()) {
+    int8_t rotation = handleRotation();
+    if (rotation != 0) {
+        // Update the current counter based on rotation direction
+        if (rotation == 1) {
+            counters[currentCounterIndex]->increment();
+        } else if (rotation == -1) {
+            counters[currentCounterIndex]->decrement();
+        }
+        displayCounter();
+    }
+
+    // Check for button press to cycle between counters
+    if (digitalRead(PIN_BTN) == LOW && (millis() - lastDebounceTime) > debounceDelay) {
+        lastDebounceTime = millis();
         currentCounterIndex = (currentCounterIndex + 1) % numCounters;
         displayCounter();
     }
 }
 
 // Non-blocking rotation handling
-void handleRotation() {
-    int16_t newPosition = rotaryEncoder.read();
+int8_t handleRotation() {
+    encoder.tick(); // check the encoder
 
-    // Check for rotation
-    if (newPosition != oldPosition) {
-        if (newPosition > oldPosition) {
-            counters[currentCounterIndex]->increment();
-        } else if (newPosition < oldPosition) {
-            counters[currentCounterIndex]->decrement();
-        }
-        oldPosition = newPosition;
-        displayCounter();
+    // Return direction changes only
+    switch (encoder.getDirection()) {
+        case RotaryEncoder::Direction::CLOCKWISE:
+            return 1; // Clockwise rotation
+        case RotaryEncoder::Direction::COUNTERCLOCKWISE:
+            return -1; // Counterclockwise rotation
+        case RotaryEncoder::Direction::NOROTATION:
+        default:
+            return 0; // No rotation
     }
 }
 
@@ -114,23 +131,16 @@ void handleRotation() {
 void selectNumOpponents() {
     bool selectingOpponents = true;
 
-    display.clearDisplay();
-    display.setCursor(0, 0);
-    display.setTextSize(1);
-    display.print("Select Opponents");
-    display.display();
-
     while (selectingOpponents) {
-        int16_t newPosition = rotaryEncoder.read();
-
-        // Update the number of opponents based on encoder rotation
-        if (newPosition != oldPosition) {
-            if (newPosition > oldPosition && numOpponents < MAX_OPPONENTS) {
+        // Use handleRotation() to get the direction of rotation
+        int8_t rotation = handleRotation();
+        if (rotation != 0) {
+            // Update the number of opponents based on encoder rotation
+            if (rotation == 1 && numOpponents < MAX_OPPONENTS) {
                 numOpponents++;
-            } else if (newPosition < oldPosition && numOpponents > 1) {
+            } else if (rotation == -1 && numOpponents > 0) {
                 numOpponents--;
             }
-            oldPosition = newPosition;
 
             // Update display with the current number of opponents
             display.clearDisplay();
@@ -138,13 +148,14 @@ void selectNumOpponents() {
             display.setTextSize(1);
             display.print("Select Opponents");
             display.setCursor(0, 20);
-            display.setTextSize(3);
+            display.setTextSize(2);
             display.print(numOpponents);
             display.display();
         }
 
         // Check for button press to confirm the selection
-        if (rotaryEncoder.isButtonPressed()) {
+        if (digitalRead(PIN_BTN) == LOW && (millis() - lastDebounceTime) > debounceDelay) {
+            lastDebounceTime = millis();
             selectingOpponents = false;
         }
     }
@@ -158,6 +169,9 @@ void setupCommanderDamageCounters() {
     // Allocate memory for all counters, including lifeTotal, poisonCounters, and commanderDamage counters
     counters = new Counter*[numCounters];
 
+    // Allocate memory for a stable name buffer
+    static char names[MAX_OPPONENTS][13];
+
     // Assign lifeTotal and poisonCounters to the counters array
     counters[0] = &lifeTotal;
     counters[1] = &poisonCounters;
@@ -165,10 +179,20 @@ void setupCommanderDamageCounters() {
     // Allocate memory for commander damage counters and assign them to the counters array
     commanderDamage = new Counter[numOpponents];
     for (uint8_t i = 0; i < numOpponents; i++) {
-        String name = "Cmdr Dmg: Opp " + String(i + 1);
-        commanderDamage[i] = Counter(name.c_str(), 0, 0, 21, 100);  // Initialize each with commander damage rules
+        snprintf(names[i], sizeof(names[i]), "Cmdr Dmg %d", i + 1); // Safely format the name into the buffer
+        commanderDamage[i] = Counter(names[i], 0, 0, 100, 21);  // Initialize each with commander damage rules
         counters[2 + i] = &commanderDamage[i];  // Assign to the counters array
     }
+}
+
+// Function to check if any counter is dead
+bool checkIfAnyCounterIsDead() {
+  for (uint8_t i = 0; i < numCounters; i++) {
+    if (counters[i]->isDead) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void displayCounter() {
@@ -177,11 +201,19 @@ void displayCounter() {
     Counter* counter = counters[currentCounterIndex];
 
     display.setCursor(0, 0);
+    display.setTextSize(1);
     display.print(counter->getName());
 
     display.setCursor(0, 20);
-    display.setTextSize(3);  // Larger text size for the counter value
+    display.setTextSize(2);  // Larger text size for the counter value
     display.print(counter->currentCount);
 
     display.display();  // Update the display with the new information
+
+    // Check if any of the counters are lethal and power LED if so
+    if (checkIfAnyCounterIsDead()) {
+        digitalWrite(PIN_LED, HIGH);  // Turn on LED if any counter is dead
+    } else {
+        digitalWrite(PIN_LED, LOW);   // Turn off LED if no counter is dead
+    }
 }
